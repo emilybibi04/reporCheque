@@ -1,0 +1,841 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cheques GCA</title>
+    
+    <!-- React + Babel -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- Tailwind -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Excel con estilos -->
+    <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
+
+    <!-- Iconos -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+
+    <!-- Firebase (compat para usar en script simple) -->
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+
+    <style>
+        .modal-overlay { background-color: rgba(0, 0, 0, 0.5); }
+    </style>
+
+    <script>
+        // 🔥 Pega aquí tu configuración de Firebase
+        // (del panel de Firebase → Configuración del proyecto → SDK para web)
+        const firebaseConfig = {
+            apiKey: "AIzaSyDTGKcdIySsHhLUEFwrFtHc0kO6ffnlzJc",
+            authDomain: "cheques-gca.firebaseapp.com",
+            projectId: "cheques-gca",
+            storageBucket: "cheques-gca.firebasestorage.app",
+            messagingSenderId: "148135962242",
+            appId: "1:148135962242:web:fb2792033c088a4cb1f69b",
+            measurementId: "G-8SP84G7983"
+        };
+
+        // Inicializar Firebase y Firestore
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.firestore();
+    </script>
+</head>
+<body class="bg-gray-100 text-gray-800 font-sans">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useRef, useEffect } = React;
+
+        // ------------------- COMPONENTE MODAL -------------------
+        const Modal = ({ isOpen, onClose, title, children }) => {
+            if (!isOpen) return null;
+            return (
+                <div className="fixed inset-0 z-50 flex items-center justify-center modal-overlay p-4">
+                    <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg overflow-hidden transform transition-all scale-100">
+                        <div className="bg-slate-800 text-white p-4 flex justify-between items-center">
+                            <h3 className="font-bold text-lg">{title}</h3>
+                            <button onClick={onClose} className="text-gray-300 hover:text-white transition">
+                                <i className="fa-solid fa-xmark text-xl"></i>
+                            </button>
+                        </div>
+                        <div className="p-6">
+                            {children}
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // ------------------- COMPONENTE PRINCIPAL -------------------
+        const App = () => {
+            const [empresaActual, setEmpresaActual] = useState('Inmobiliaria del Sur');
+            const [busqueda, setBusqueda] = useState('');
+
+            const opcionesCustodia = [
+                "Beneficiario",
+                "Departamento GDP",
+                "Departamento de Sistemas",
+                "Departamento de Financiero",
+                "Gerencia",
+                "Caja Fuerte",
+                "Mensajería/En Tránsito"
+            ];
+
+            // Registros vienen desde Firestore (inicialmente vacío)
+            const [registros, setRegistros] = useState([]);
+
+            const [modalVerOpen, setModalVerOpen] = useState(false);
+            const [modalEditarOpen, setModalEditarOpen] = useState(false);
+            const [modalMasivaOpen, setModalMasivaOpen] = useState(false);
+            const [chequeSeleccionado, setChequeSeleccionado] = useState(null);
+            const fileInputRef = useRef(null);
+
+            const [formData, setFormData] = useState({
+                numero: '',
+                monto: '',
+                beneficiario: '',
+                estado: 'Emitido',
+                custodia: '',
+                fecha: new Date().toISOString().split('T')[0],
+                obs: ''
+            });
+
+            const empresas = [
+                'Inmobiliaria del Sur',
+                'Grupo Alpha',
+                'Holding 5',
+                'Logística Express'
+            ];
+
+            // ---------- LECTURA EN TIEMPO REAL DESDE FIRESTORE ----------
+            useEffect(() => {
+                // Escucha todos los cheques del proyecto
+                // (Filtro por empresa se hace en la vista, así sirve para reporte global)
+                const unsubscribe = db
+                    .collection('cheques')
+                    .orderBy('empresa')
+                    .orderBy('fecha')
+                    .onSnapshot(
+                        (snapshot) => {
+                            const docs = snapshot.docs.map(doc => ({
+                                id: doc.id,
+                                ...doc.data()
+                            }));
+                            setRegistros(docs);
+                        },
+                        (error) => {
+                            console.error("Error al leer cheques:", error);
+                            alert("Error al leer cheques desde la base de datos.");
+                        }
+                    );
+
+                // Limpia el listener cuando se desmonta el componente
+                return () => unsubscribe();
+            }, []);
+
+            // ------------------- CREAR NUEVO CHEQUE -------------------
+            const handleSubmit = async (e) => {
+                e.preventDefault();
+                if (!formData.custodia) {
+                    alert("⚠️ Selecciona la custodia.");
+                    return;
+                }
+
+                const nuevoCheque = {
+                    empresa: empresaActual,
+                    numero: formData.numero.trim(),
+                    monto: parseFloat(formData.monto) || 0,
+                    beneficiario: formData.beneficiario.trim(),
+                    estado: formData.estado,
+                    custodia: formData.custodia,
+                    fecha: formData.fecha,
+                    obs: formData.obs.trim()
+                };
+
+                try {
+                    await db.collection('cheques').add(nuevoCheque);
+                    setFormData({
+                        numero: '',
+                        monto: '',
+                        beneficiario: '',
+                        estado: 'Emitido',
+                        custodia: '',
+                        fecha: new Date().toISOString().split('T')[0],
+                        obs: ''
+                    });
+                    alert("✅ Cheque registrado en la base de datos");
+                } catch (error) {
+                    console.error("Error al guardar cheque:", error);
+                    alert("❌ Error al guardar el cheque. Revisa la consola.");
+                }
+            };
+
+            // ------------------- ABRIR MODAL EDITAR -------------------
+            const abrirEditar = (cheque) => {
+                setChequeSeleccionado(cheque);
+                setFormData({
+                    numero: cheque.numero,
+                    monto: cheque.monto,
+                    beneficiario: cheque.beneficiario || '',
+                    estado: cheque.estado,
+                    custodia: cheque.custodia || '',
+                    fecha: cheque.fecha,
+                    obs: cheque.obs || ''
+                });
+                setModalEditarOpen(true);
+            };
+
+            // ------------------- GUARDAR EDICIÓN -------------------
+            const guardarEdicion = async (e) => {
+                e.preventDefault();
+                if (!chequeSeleccionado) return;
+
+                const datosEditados = {
+                    numero: formData.numero.trim(),
+                    monto: parseFloat(formData.monto) || 0,
+                    beneficiario: formData.beneficiario.trim(),
+                    estado: formData.estado,
+                    custodia: formData.custodia,
+                    // mantenemos fecha original o la que venga del form
+                    fecha: formData.fecha,
+                    obs: formData.obs.trim()
+                };
+
+                try {
+                    await db.collection('cheques')
+                        .doc(chequeSeleccionado.id)
+                        .update(datosEditados);
+
+                    setModalEditarOpen(false);
+                    setChequeSeleccionado(null);
+                    setFormData({
+                        numero: '',
+                        monto: '',
+                        beneficiario: '',
+                        estado: 'Emitido',
+                        custodia: '',
+                        fecha: new Date().toISOString().split('T')[0],
+                        obs: ''
+                    });
+                    alert("✅ Cheque actualizado correctamente");
+                } catch (error) {
+                    console.error("Error al actualizar cheque:", error);
+                    alert("❌ Error al actualizar el cheque.");
+                }
+            };
+
+            // ------------------- CARGA MASIVA DESDE EXCEL -------------------
+            const procesarCargaMasiva = (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+
+                const reader = new FileReader();
+                reader.onload = async (evt) => {
+                    try {
+                        const bstr = evt.target.result;
+                        const wb = XLSX.read(bstr, { type: 'binary' });
+                        const ws = wb.Sheets[wb.SheetNames[0]];
+                        const data = XLSX.utils.sheet_to_json(ws);
+
+                        const nuevos = data.map((row) => ({
+                            empresa: empresaActual,
+                            numero: (row['Numero'] || 'S/N').toString(),
+                            monto: parseFloat(row['Monto']) || 0,
+                            beneficiario: row['Beneficiario'] || '',
+                            estado: row['Estado'] || 'Emitido',
+                            custodia: row['Custodia'] || 'Caja Fuerte',
+                            fecha: row['Fecha'] || new Date().toISOString().split('T')[0],
+                            obs: row['Observaciones'] || 'Carga Masiva'
+                        }));
+
+                        // Guardar uno por uno (para comenzar está bien)
+                        const batchPromises = nuevos.map((cheque) =>
+                            db.collection('cheques').add(cheque)
+                        );
+                        await Promise.all(batchPromises);
+
+                        setModalMasivaOpen(false);
+                        if (fileInputRef.current) fileInputRef.current.value = "";
+                        alert(`✅ Se cargaron ${nuevos.length} cheques a la base de datos.`);
+                    } catch (error) {
+                        console.error("Error en carga masiva:", error);
+                        alert("❌ Error al procesar el archivo. Revisa el formato.");
+                    }
+                };
+                reader.readAsBinaryString(file);
+            };
+
+            // ------------------- REPORTE EXCEL POR EMPRESA -------------------
+            const descargarExcelIndividual = () => {
+                const datosReporte = registros
+                    .filter(r => r.empresa === empresaActual)
+                    .map(r => ({
+                        "Fecha": r.fecha,
+                        "N° Cheque": r.numero,
+                        "Beneficiario": r.beneficiario,
+                        "Monto": r.monto,
+                        "Estado": r.estado,
+                        "Custodia": r.custodia,
+                        "Observaciones": r.obs
+                    }));
+
+                generarExcel(datosReporte, `Reporte_${empresaActual}`, false);
+            };
+
+            // ------------------- REPORTE GLOBAL -------------------
+            const descargarReporteGlobal = () => {
+                const datosGlobales = [...registros].sort(
+                    (a, b) =>
+                        a.empresa.localeCompare(b.empresa) ||
+                        a.fecha.localeCompare(b.fecha)
+                );
+
+                const datosReporte = datosGlobales.map(r => ({
+                    "Empresa": r.empresa,
+                    "Fecha": r.fecha,
+                    "N° Cheque": r.numero,
+                    "Beneficiario": r.beneficiario,
+                    "Monto": r.monto,
+                    "Estado": r.estado,
+                    "Custodia": r.custodia,
+                    "Observaciones": r.obs
+                }));
+
+                generarExcel(datosReporte, `Reporte_Consolidado_GLOBAL`, true);
+            };
+
+            // ------------------- GENERAR EXCEL CON ESTILO -------------------
+            const generarExcel = (datos, nombreArchivo, esGlobal) => {
+                const ws = XLSX.utils.json_to_sheet(datos);
+
+                let anchos = [
+                    { wch: 12 }, // Fecha
+                    { wch: 15 }, // N° Cheque
+                    { wch: 30 }, // Beneficiario
+                    { wch: 15 }, // Monto
+                    { wch: 15 }, // Estado
+                    { wch: 25 }, // Custodia
+                    { wch: 30 }  // Observaciones
+                ];
+
+                if (esGlobal) {
+                    // Empresa + las demás
+                    anchos = [
+                        { wch: 25 }, // Empresa
+                        ...anchos
+                    ];
+                }
+
+                ws['!cols'] = anchos;
+
+                const range = XLSX.utils.decode_range(ws['!ref']);
+                const colMonto = esGlobal ? 4 : 3; // índice de columna Monto
+
+                for (let R = range.s.r; R <= range.e.r; ++R) {
+                    for (let C = range.s.c; C <= range.e.c; ++C) {
+                        const cell_address = XLSX.utils.encode_cell({ r: R, c: C });
+                        if (!ws[cell_address]) continue;
+
+                        let style = {
+                            border: {
+                                top: { style: "thin" },
+                                bottom: { style: "thin" },
+                                left: { style: "thin" },
+                                right: { style: "thin" }
+                            },
+                            font: { name: "Arial", sz: 10 }
+                        };
+
+                        if (R === 0) {
+                            style.fill = {
+                                fgColor: { rgb: esGlobal ? "581c87" : "1e40af" }
+                            };
+                            style.font = {
+                                name: "Arial",
+                                sz: 11,
+                                bold: true,
+                                color: { rgb: "FFFFFF" }
+                            };
+                            style.alignment = {
+                                horizontal: "center",
+                                vertical: "center"
+                            };
+                        }
+
+                        if (C === colMonto && R > 0) {
+                            style.numFmt = '"$"#,##0.00';
+                            style.alignment = { horizontal: "right" };
+                        }
+
+                        ws[cell_address].s = style;
+                    }
+                }
+
+                const wb = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(wb, ws, "Reporte");
+                XLSX.writeFile(
+                    wb,
+                    `${nombreArchivo}_${new Date().toISOString().slice(0, 10)}.xlsx`
+                );
+            };
+
+            // ------------------- DESCARGAR PLANTILLA -------------------
+            const descargarPlantilla = () => {
+                const data = [{
+                    Numero: "001",
+                    Monto: 100,
+                    Beneficiario: "Ejemplo",
+                    Estado: "Emitido",
+                    Custodia: "Departamento GDP",
+                    Fecha: "2023-12-01",
+                    Observaciones: "Prueba"
+                }];
+                const ws = XLSX.utils.json_to_sheet(data);
+                const wb = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(wb, ws, 'Plantilla');
+                XLSX.writeFile(wb, "Plantilla_Carga.xlsx");
+            };
+
+            // ------------------- COLOR SEGÚN ESTADO -------------------
+            const getColorEstado = (estado) => {
+                if (estado === 'En Blanco (FIRMADO)') return 'bg-red-100 text-red-700 border-red-200 font-bold';
+                if (estado === 'Cobrado') return 'bg-green-100 text-green-700 border-green-200';
+                if (estado === 'Anulado') return 'bg-gray-200 text-gray-500 line-through';
+                return 'bg-blue-50 text-blue-700 border-blue-200';
+            };
+
+            // ------------------- FILTRAR PARA LA TABLA -------------------
+            const registrosFiltrados = registros.filter(r =>
+                r.empresa === empresaActual &&
+                (
+                    (r.numero || '').toString().includes(busqueda) ||
+                    (r.beneficiario || '').toLowerCase().includes(busqueda.toLowerCase())
+                )
+            );
+
+            // ------------------- RENDER -------------------
+            return (
+                <div className="min-h-screen flex flex-col">
+                    {/* NAVBAR */}
+                    <nav className="bg-slate-800 text-white p-4 shadow-lg flex flex-col md:flex-row justify-between items-center gap-4 sticky top-0 z-10">
+                        <div className="flex items-center gap-3">
+                            <div className="bg-blue-500 p-2 rounded-lg">
+                                <i className="fa-solid fa-chart-pie text-xl"></i>
+                            </div>
+                            <div>
+                                <h1 className="font-bold text-lg leading-tight">
+                                    Cheques<span className="text-blue-400">GCA</span>
+                                </h1>
+                                <p className="text-xs text-slate-400">
+                                    Control y Reportes Globales
+                                </p>
+                            </div>
+                        </div>
+
+                        <div className="flex gap-4">
+                            <button
+                                onClick={descargarReporteGlobal}
+                                className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg text-xs font-bold uppercase tracking-wider shadow-lg flex items-center gap-2 border border-purple-500"
+                            >
+                                <i className="fa-solid fa-earth-americas"></i> Reporte Global
+                            </button>
+
+                            <div className="flex items-center gap-2 bg-slate-700 px-4 py-2 rounded-lg border border-slate-600">
+                                <span className="text-xs text-slate-300 uppercase font-bold tracking-wider">
+                                    Empresa:
+                                </span>
+                                <select
+                                    value={empresaActual}
+                                    onChange={(e) => setEmpresaActual(e.target.value)}
+                                    className="bg-transparent font-bold outline-none cursor-pointer text-white"
+                                >
+                                    {empresas.map(e => (
+                                        <option key={e} value={e} className="text-black">
+                                            {e}
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+                        </div>
+                    </nav>
+
+                    {/* CONTENIDO */}
+                    <div className="flex-1 p-6 max-w-7xl mx-auto w-full grid grid-cols-1 lg:grid-cols-12 gap-8">
+                        {/* FORMULARIO */}
+                        <div className="lg:col-span-4 xl:col-span-3 space-y-6">
+                            <div className="bg-white p-5 rounded-xl shadow-md border border-slate-200 sticky top-24">
+                                <h2 className="text-sm font-bold text-slate-500 uppercase mb-4 border-b pb-2">
+                                    Registro en {empresaActual}
+                                </h2>
+                                <form onSubmit={handleSubmit} className="space-y-3">
+                                    <input
+                                        type="text"
+                                        placeholder="Número Cheque"
+                                        className="w-full p-2 border rounded text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                                        value={formData.numero}
+                                        onChange={e => setFormData({ ...formData, numero: e.target.value })}
+                                        required
+                                    />
+
+                                    <div className="grid grid-cols-2 gap-2">
+                                        <select
+                                            className="w-full p-2 border rounded text-sm focus:ring-2 focus:ring-blue-500 outline-none bg-white"
+                                            value={formData.estado}
+                                            onChange={e => setFormData({ ...formData, estado: e.target.value })}
+                                        >
+                                            <option value="Emitido">Emitido</option>
+                                            <option value="Cobrado">Cobrado</option>
+                                            <option value="En Blanco (FIRMADO)">⚠️ FIRMADO</option>
+                                            <option value="En Blanco (Vacío)">Vacío</option>
+                                            <option value="Anulado">Anulado</option>
+                                        </select>
+                                        <input
+                                            type="date"
+                                            className="w-full p-2 border rounded text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                                            value={formData.fecha}
+                                            onChange={e => setFormData({ ...formData, fecha: e.target.value })}
+                                            required
+                                        />
+                                    </div>
+
+                                    <input
+                                        type="number"
+                                        placeholder="Monto ($)"
+                                        step="0.01"
+                                        className="w-full p-2 border rounded text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                                        value={formData.monto}
+                                        onChange={e => setFormData({ ...formData, monto: e.target.value })}
+                                    />
+
+                                    <input
+                                        type="text"
+                                        placeholder="Beneficiario"
+                                        className="w-full p-2 border rounded text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                                        value={formData.beneficiario}
+                                        onChange={e => setFormData({ ...formData, beneficiario: e.target.value })}
+                                    />
+
+                                    <div className="relative">
+                                        <i className="fa-solid fa-user-shield absolute top-3 left-2 text-slate-400 text-xs z-10"></i>
+                                        <select
+                                            className="w-full pl-7 p-2 border rounded text-sm focus:ring-2 focus:ring-blue-500 outline-none bg-yellow-50 cursor-pointer appearance-none"
+                                            value={formData.custodia}
+                                            onChange={e => setFormData({ ...formData, custodia: e.target.value })}
+                                            required
+                                        >
+                                            <option value="">Seleccionar Custodia...</option>
+                                            {opcionesCustodia.map(op => (
+                                                <option key={op} value={op}>{op}</option>
+                                            ))}
+                                        </select>
+                                        <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-slate-500">
+                                            <i className="fa-solid fa-chevron-down text-xs"></i>
+                                        </div>
+                                    </div>
+
+                                    <textarea
+                                        placeholder="Observaciones"
+                                        className="w-full p-2 border rounded text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                                        rows="2"
+                                        value={formData.obs}
+                                        onChange={e => setFormData({ ...formData, obs: e.target.value })}
+                                    ></textarea>
+
+                                    <button
+                                        type="submit"
+                                        className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 rounded-lg transition text-sm"
+                                    >
+                                        Guardar Cheque
+                                    </button>
+                                </form>
+                            </div>
+                        </div>
+
+                        {/* TABLA */}
+                        <div className="lg:col-span-8 xl:col-span-9 space-y-4">
+                            <div className="flex flex-col sm:flex-row justify-between items-center gap-4 bg-white p-4 rounded-xl shadow-sm border border-slate-100">
+                                <div className="relative w-full sm:w-64">
+                                    <i className="fa-solid fa-search absolute left-3 top-3 text-slate-400 text-sm"></i>
+                                    <input
+                                        type="text"
+                                        placeholder="Buscar..."
+                                        className="w-full pl-9 pr-4 py-2 bg-slate-50 border-none rounded-lg text-sm focus:ring-2 focus:ring-blue-200 outline-none"
+                                        value={busqueda}
+                                        onChange={e => setBusqueda(e.target.value)}
+                                    />
+                                </div>
+                                <div className="flex gap-2">
+                                    <button
+                                        onClick={() => setModalMasivaOpen(true)}
+                                        className="bg-gray-600 hover:bg-gray-700 text-white px-3 py-2 rounded-lg text-sm font-bold transition"
+                                    >
+                                        <i className="fa-solid fa-upload"></i>
+                                    </button>
+                                    <button
+                                        onClick={descargarExcelIndividual}
+                                        className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-2 rounded-lg text-sm font-bold transition shadow-md"
+                                    >
+                                        <i className="fa-solid fa-file-excel"></i> Excel {empresaActual}
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div className="bg-white rounded-xl shadow-lg border border-slate-200 overflow-hidden">
+                                <div className="overflow-x-auto">
+                                    <table className="w-full text-left border-collapse">
+                                        <thead className="bg-slate-50 text-slate-500 text-xs uppercase font-bold tracking-wider">
+                                            <tr>
+                                                <th className="p-4 border-b">Fecha</th>
+                                                <th className="p-4 border-b">N°</th>
+                                                <th className="p-4 border-b">Beneficiario</th>
+                                                <th className="p-4 border-b">Custodia</th>
+                                                <th className="p-4 border-b">Estado</th>
+                                                <th className="p-4 border-b text-right">Monto</th>
+                                                <th className="p-4 border-b text-center"></th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="text-sm divide-y divide-slate-100">
+                                            {registrosFiltrados.map(r => (
+                                                <tr key={r.id} className="hover:bg-slate-50 transition-colors">
+                                                    <td className="p-4 text-slate-600 whitespace-nowrap">{r.fecha}</td>
+                                                    <td className="p-4 font-mono font-bold text-slate-700">{r.numero}</td>
+                                                    <td className="p-4 text-slate-800 max-w-xs truncate">
+                                                        {r.beneficiario || '-'}
+                                                    </td>
+                                                    <td className="p-4 text-xs">
+                                                        {r.custodia ? (
+                                                            <span className="bg-yellow-100 text-yellow-800 px-2 py-1 rounded border border-yellow-200 font-medium whitespace-nowrap">
+                                                                <i className="fa-solid fa-user-tag mr-1"></i>
+                                                                {r.custodia.split('(')[0]}
+                                                            </span>
+                                                        ) : (
+                                                            <span className="text-slate-300">-</span>
+                                                        )}
+                                                    </td>
+                                                    <td className="p-4">
+                                                        <span className={`px-2 py-1 rounded-md text-xs border ${getColorEstado(r.estado)} whitespace-nowrap`}>
+                                                            {r.estado}
+                                                        </span>
+                                                    </td>
+                                                    <td className="p-4 text-right font-bold text-slate-700">
+                                                        ${Number(r.monto || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                                                    </td>
+                                                    <td className="p-4 flex justify-center gap-1">
+                                                        <button
+                                                            onClick={() => { setChequeSeleccionado(r); setModalVerOpen(true); }}
+                                                            className="p-2 text-blue-600 hover:bg-blue-50 rounded"
+                                                        >
+                                                            <i className="fa-solid fa-eye"></i>
+                                                        </button>
+                                                        <button
+                                                            onClick={() => abrirEditar(r)}
+                                                            className="p-2 text-amber-600 hover:bg-amber-50 rounded"
+                                                        >
+                                                            <i className="fa-solid fa-pen"></i>
+                                                        </button>
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                            {registrosFiltrados.length === 0 && (
+                                                <tr>
+                                                    <td colSpan="7" className="p-8 text-center text-slate-400">
+                                                        No hay datos en {empresaActual}.
+                                                    </td>
+                                                </tr>
+                                            )}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* MODAL VER FICHA */}
+                    <Modal
+                        isOpen={modalVerOpen}
+                        onClose={() => setModalVerOpen(false)}
+                        title="Ficha del Cheque"
+                    >
+                        {chequeSeleccionado && (
+                            <div className="space-y-4">
+                                <div className="flex justify-between items-start bg-slate-50 p-3 rounded-lg border border-slate-100">
+                                    <div>
+                                        <p className="text-xs text-slate-400 uppercase">Empresa</p>
+                                        <p className="font-bold text-slate-800">
+                                            {chequeSeleccionado.empresa}
+                                        </p>
+                                    </div>
+                                    <div className="text-right">
+                                        <p className="text-xs text-slate-400 uppercase">Valor</p>
+                                        <p className="text-2xl font-bold text-blue-600">
+                                            ${Number(chequeSeleccionado.monto || 0).toLocaleString()}
+                                        </p>
+                                    </div>
+                                </div>
+                                <div className="grid grid-cols-2 gap-4">
+                                    <div>
+                                        <p className="text-xs text-slate-400 uppercase">Estado</p>
+                                        <span className={`inline-block mt-1 px-3 py-1 rounded-full text-xs font-bold border ${getColorEstado(chequeSeleccionado.estado)}`}>
+                                            {chequeSeleccionado.estado}
+                                        </span>
+                                    </div>
+                                    <div>
+                                        <p className="text-xs text-slate-400 uppercase">Custodia</p>
+                                        <p className="font-bold text-slate-700 mt-1">
+                                            <i className="fa-solid fa-user-shield text-yellow-500 mr-2"></i>
+                                            {chequeSeleccionado.custodia}
+                                        </p>
+                                    </div>
+                                </div>
+                                <hr className="border-slate-100" />
+                                <div>
+                                    <p className="text-xs text-slate-400 uppercase">N° Cheque</p>
+                                    <p className="font-mono text-xl">
+                                        {chequeSeleccionado.numero}
+                                    </p>
+                                </div>
+                                <div>
+                                    <p className="text-xs text-slate-400 uppercase">Beneficiario</p>
+                                    <p className="font-medium text-lg">
+                                        {chequeSeleccionado.beneficiario || '-'}
+                                    </p>
+                                </div>
+                                <div>
+                                    <p className="text-xs text-slate-400 uppercase">Observaciones</p>
+                                    <p className="bg-slate-50 p-3 rounded text-sm text-slate-600 mt-1 italic">
+                                        "{chequeSeleccionado.obs || 'Sin observaciones'}"
+                                    </p>
+                                </div>
+                            </div>
+                        )}
+                    </Modal>
+
+                    {/* MODAL EDITAR */}
+                    <Modal
+                        isOpen={modalEditarOpen}
+                        onClose={() => setModalEditarOpen(false)}
+                        title="Editar Información"
+                    >
+                        <form onSubmit={guardarEdicion} className="space-y-4">
+                            <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label className="text-xs font-bold text-slate-500">Número</label>
+                                    <input
+                                        type="text"
+                                        className="w-full p-2 border rounded"
+                                        value={formData.numero}
+                                        onChange={e => setFormData({ ...formData, numero: e.target.value })}
+                                    />
+                                </div>
+                                <div>
+                                    <label className="text-xs font-bold text-slate-500">Monto</label>
+                                    <input
+                                        type="number"
+                                        step="0.01"
+                                        className="w-full p-2 border rounded"
+                                        value={formData.monto}
+                                        onChange={e => setFormData({ ...formData, monto: e.target.value })}
+                                    />
+                                </div>
+                            </div>
+
+                            <div>
+                                <label className="text-xs font-bold text-slate-500">Estado</label>
+                                <select
+                                    className="w-full p-2 border rounded bg-white"
+                                    value={formData.estado}
+                                    onChange={e => setFormData({ ...formData, estado: e.target.value })}
+                                >
+                                    <option value="Emitido">Emitido</option>
+                                    <option value="Cobrado">Cobrado</option>
+                                    <option value="En Blanco (FIRMADO)">⚠️ FIRMADO EN BLANCO</option>
+                                    <option value="Anulado">Anulado</option>
+                                </select>
+                            </div>
+
+                            <div>
+                                <label className="text-xs font-bold text-slate-500">Custodia</label>
+                                <select
+                                    className="w-full p-2 border rounded bg-yellow-50"
+                                    value={formData.custodia}
+                                    onChange={e => setFormData({ ...formData, custodia: e.target.value })}
+                                >
+                                    <option value="">Seleccionar...</option>
+                                    {opcionesCustodia.map(op => (
+                                        <option key={op} value={op}>{op}</option>
+                                    ))}
+                                </select>
+                            </div>
+
+                            <div>
+                                <label className="text-xs font-bold text-slate-500">Beneficiario</label>
+                                <input
+                                    type="text"
+                                    className="w-full p-2 border rounded"
+                                    value={formData.beneficiario}
+                                    onChange={e => setFormData({ ...formData, beneficiario: e.target.value })}
+                                />
+                            </div>
+
+                            <div>
+                                <label className="text-xs font-bold text-slate-500">Observaciones</label>
+                                <textarea
+                                    className="w-full p-2 border rounded"
+                                    rows="3"
+                                    value={formData.obs}
+                                    onChange={e => setFormData({ ...formData, obs: e.target.value })}
+                                ></textarea>
+                            </div>
+
+                            <button
+                                type="submit"
+                                className="w-full bg-amber-500 hover:bg-amber-600 text-white font-bold py-3 rounded-lg"
+                            >
+                                Guardar Cambios
+                            </button>
+                        </form>
+                    </Modal>
+
+                    {/* MODAL CARGA MASIVA */}
+                    <Modal
+                        isOpen={modalMasivaOpen}
+                        onClose={() => setModalMasivaOpen(false)}
+                        title="Importar Excel"
+                    >
+                        <div className="space-y-6 text-center">
+                            <div className="bg-blue-50 p-4 rounded-lg border border-blue-100 text-sm text-blue-800">
+                                <p>Plantilla actualizada.</p>
+                                <button
+                                    onClick={descargarPlantilla}
+                                    className="mt-2 text-blue-600 font-bold underline hover:text-blue-800"
+                                >
+                                    <i className="fa-solid fa-download"></i> Descargar Plantilla
+                                </button>
+                            </div>
+                            <div className="border-2 border-dashed border-slate-300 rounded-xl p-8 hover:bg-slate-50 transition cursor-pointer relative">
+                                <input
+                                    type="file"
+                                    ref={fileInputRef}
+                                    onChange={procesarCargaMasiva}
+                                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                                    accept=".xlsx, .xls, .csv"
+                                />
+                                <i className="fa-solid fa-cloud-arrow-up text-4xl text-slate-400 mb-2"></i>
+                                <p className="font-bold text-slate-600">Subir Excel Aquí</p>
+                            </div>
+                        </div>
+                    </Modal>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
